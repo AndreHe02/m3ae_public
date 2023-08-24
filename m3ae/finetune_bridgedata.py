@@ -11,6 +11,9 @@ import numpy as np
 import optax
 import torch
 import wandb
+import os
+from jaxrl_m.data.text_processing import text_processors
+
 from flax import linen as nn
 from flax.jax_utils import prefetch_to_device
 from jaxrl_m.data.bridge_dataset import BridgeDataset, glob_to_path_list
@@ -44,9 +47,12 @@ from .utils import (
     get_user_flags,
     image_float2int,
     load_pickle,
+    load_checkpoint,
     set_random_seed,
 )
-from .vqgan import get_image_tokenizer
+
+imagenet_mean = (0.485, 0.456, 0.406)
+imagenet_std = (0.229, 0.224, 0.225)
 
 FLAGS_DEF = define_flags_with_default(
     seed=42,
@@ -89,7 +95,7 @@ FLAGS = absl.flags.FLAGS
 
 config_flags.DEFINE_config_file(
     "bridgedata_config",
-    "experiments/andre/configs/data_config.py:all",
+    "/nfs/nfs2/users/andrehe/jaxrl_minimal/experiments/andre/configs/data_config.py:all",
     "File path to the bridgedata configuration.",
     lock_config=False,
 )
@@ -97,7 +103,7 @@ config_flags.DEFINE_config_file(
 # use any config; we just need the dataset kwargs
 config_flags.DEFINE_config_file(
     "config",
-    "experiments/andre/configs/train_config.py:transformer_bc_light",
+    "/nfs/nfs2/users/andrehe/jaxrl_minimal/experiments/andre/configs/train_config.py:transformer_bc_light",
     "File path to the training hyperparameter configuration.",
     lock_config=False,
 )
@@ -131,7 +137,9 @@ def create_train_step(model, learning_rate, encode_image=None, decode_image=None
                 None if FLAGS.image_all_token_loss else image_mask,
             )
             image_accuracy = 0.0
-
+            
+            text_loss = 0.0
+            text_accuracy = 0.0
             # text_loss, text_accuracy = cross_entropy_loss_and_accuracy(
             #     text_output,
             #     text,
@@ -259,7 +267,7 @@ def main(argv):
 
     text_processor = text_processors["hf_tokenizer"](
         tokenizer_name="bert-base-uncased",
-        toknizer_kwargs=dict(
+        tokenizer_kwargs=dict(
             padding="max_length",
             truncation=True,
             max_length=64,
@@ -294,6 +302,9 @@ def main(argv):
     )
     train_data_iter = train_data.get_iterator()
 
+    image_patch_dim = FLAGS.patch_size * FLAGS.patch_size * 3
+    image_sequence_length = (256 // FLAGS.patch_size) ** 2
+
     tokenizer_params, encode_image, decode_image, image_vocab_size = (
         None,
         None,
@@ -304,7 +315,7 @@ def main(argv):
 
     model = MaskedMultimodalAutoencoder(
         config_updates=FLAGS.m3ae,
-        text_vocab_size=dataset.vocab_size,
+        text_vocab_size=30522,
         image_output_dim=image_output_dim,
     )
 
@@ -328,19 +339,28 @@ def main(argv):
             {key: decay(key) for key in flattened_params.keys()}
         )
 
-    if FLAGS.load_checkpoint != "":
-        checkpoint_data = load_pickle(FLAGS.load_checkpoint)
-        state = flax.jax_utils.replicate(checkpoint_data["state"], jax_devices)
-        start_step = checkpoint_data["step"]
-        del tokenizer_params
+    tokenizer_max_length = 64
+    if False: # FLAGS.load_checkpoint != "":
+        #checkpoint_data = load_pickle(FLAGS.load_checkpoint)
+        #state = flax.jax_utils.replicate(checkpoint_data["state"], jax_devices)
+        #start_step = checkpoint_data["step"]
+        #del tokenizer_params
+        pass
     else:
         image = jnp.zeros(
             (2, image_sequence_length, image_patch_dim), dtype=jnp.float32
         )
-        text = jnp.zeros((2, dataset.config.tokenizer_max_length), dtype=jnp.int32)
-        text_padding_mask = jnp.zeros((2, dataset.config.tokenizer_max_length))
+        text = jnp.zeros((2, tokenizer_max_length), dtype=jnp.int32)
+        text_padding_mask = jnp.zeros((2, tokenizer_max_length))
         rngs = next_rng(keys=model.rng_keys())
         params = model.init(rngs, image, text, text_padding_mask, deterministic=False)
+
+        params = flax.core.unfreeze(params)
+        if FLAGS.load_checkpoint != "":
+            checkpoint_data = load_checkpoint(FLAGS.load_checkpoint)
+            checkpoint_params = checkpoint_data["state"].params["params"]
+            params['params'] = checkpoint_params
+        
 
         state = flax.jax_utils.replicate(
             M3AETrainState.create(
@@ -372,12 +392,18 @@ def main(argv):
         while True:
             batch = next(iterator)
             b = {}
-            b["image"] = batch["observations"]["image"].astype(np.float32)
-            b["target_image"] = batch["goals"]["image"].astype(np.float32)
+            b["image"] = (batch["observations"]["image"].astype(np.float32) - imagenet_mean) / imagenet_std
+            b["target_image"] = (batch["goals"]["image"].astype(np.float32) - imagenet_mean) / imagenet_std
             b["text"] = batch["goals"]["language"]["input_ids"].astype(np.int32)
             b["text_padding_mask"] = 1.0 - batch["goals"]["language"][
                 "attention_mask"
             ].astype(np.float32)
+            
+            b = jax.tree_map(
+                lambda x: x.reshape((n_devices, -1, *x.shape[1:])),
+                b,
+            )
+
             yield b
 
     state = sync_state_across_devices(state)
@@ -400,7 +426,7 @@ def main(argv):
         )
 
     data_iterator = prefetch_to_device(generate_batch(), 2, jax_devices)
-    step_counter = trange(start_step, total_steps, ncols=0)
+    step_counter = trange(0, total_steps, ncols=0)
 
     for step, batch in zip(step_counter, data_iterator):
         (
@@ -421,23 +447,19 @@ def main(argv):
         if FLAGS.plot_freq > 0 and step % FLAGS.plot_freq == 0:
             log_image = create_log_images(
                 jax.device_get(patch_predict_fn(state, sharded_rng, batch)),
-                mean=dataset.image_mean,
-                std=dataset.image_std,
+                mean=imagenet_mean,
+                std=imagenet_std,
             )
-            text_ids = batch["text"]["input_ids"]
-            text = text_processor.decode(text_ids)[: len(log_image)]
+            #text_ids = jax.device_get(batch["text"])
+            #text_ids = text_ids.reshape((-1, *text_ids.shape[2:]))
+            #text = text_processor.decode(text_ids)[: len(log_image)]
 
-            table = wandb.Table(
-                columns=["images", "text"],
-                data=[[wandb.Image(img) for img in log_image], [text]],
-            )
-
+            #table = wandb.Table(
+            #    columns=["images", "text"],
+            #    data=list(zip([wandb.Image(img) for img in log_image], text)),
+            #)
             if jax_process_index == 0:
-                logger.log(
-                    {
-                        "image_text": table,
-                    }
-                )
+                logger.log({"image_prediction": wandb.Image(log_image)})
 
         if FLAGS.save_model_freq > 0 and step % FLAGS.save_model_freq == 0:
             save_data = {
@@ -445,8 +467,8 @@ def main(argv):
                 "variant": variant,
                 "state": jax.device_get(flax.jax_utils.unreplicate(state)),
             }
-            if jax_process_index == 0:
-                logger.save_pickle(save_data, "model.pkl")
+            # if jax_process_index == 0:
+               #  logger.save_pickle(save_data, "model.pkl")
 
     if FLAGS.save_model_freq > 0:
         save_data = {
@@ -454,8 +476,8 @@ def main(argv):
             "variant": variant,
             "state": jax.device_get(flax.jax_utils.unreplicate(state)),
         }
-        if jax_process_index == 0:
-            logger.save_pickle(save_data, "model.pkl")
+        # if jax_process_index == 0:
+           # logger.save_pickle(save_data, "model.pkl")
 
 
 if __name__ == "__main__":

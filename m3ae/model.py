@@ -336,7 +336,8 @@ class MaskedMultimodalAutoencoder(nn.Module):
     @nn.nowrap
     def get_default_config(updates=None):
         config = ConfigDict()
-        config.model_type = config_dict.placeholder(str)
+        # config.model_type = config_dict.placeholder(str)
+        config.model_type = 'large'
         config.emb_dim = 1024
         config.dec_emb_dim = 512
         config.depth = 24
