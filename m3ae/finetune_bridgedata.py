@@ -266,6 +266,7 @@ def main(argv):
             return_tensors="np",
             add_special_tokens=False,
         ),
+        encode_with_model=False,
     )
 
     # do not use goal relabeling
