@@ -12,6 +12,7 @@ import numpy as np
 import optax
 import torch
 import wandb
+import tensorflow as tf
 from flax import linen as nn
 from flax.jax_utils import prefetch_to_device
 from flax.training import checkpoints
@@ -112,7 +113,7 @@ config_flags.DEFINE_config_file(
 
 
 def create_train_step(model, learning_rate, encode_image=None, decode_image=None):
-    @partial(jax.pmap, axis_name="pmap", donate_argnums=(0, 5))
+    @partial(jax.pmap, axis_name="pmap")
     def train_step_fn(state, rng, accumulated_grads, accumulated_steps, batch):
         rng_generator = JaxRNG(rng)
         image = batch["image"]
@@ -460,6 +461,7 @@ def main(argv):
             )
             val_log_metrics = {"step": step}
             val_log_metrics.update(get_metrics(val_metrics, unreplicate=True))
+            val_log_metrics = {"val_"+k:v for k, v in val_log_metrics.items()}
             logger.log(val_log_metrics)
             tqdm.write("\n" + pprint.pformat(val_log_metrics) + "\n")
 
@@ -475,7 +477,7 @@ def main(argv):
 
             if jax_process_index == 0:
                 checkpoints.save_checkpoint(
-                    FLAGS.save_dir,
+                    tf.io.gfile.join(FLAGS.save_dir, logger.run.name),
                     state,
                     step=step,
                 )
