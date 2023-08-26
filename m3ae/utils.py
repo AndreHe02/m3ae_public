@@ -39,7 +39,7 @@ class WandBLogger(object):
     @staticmethod
     def get_default_config(updates=None):
         config = ConfigDict()
-        config.online = False
+        config.online = True 
         config.prefix = "M3AE"
         config.project = "m3ae"
         config.output_dir = "/tmp/m3ae"
