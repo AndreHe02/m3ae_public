@@ -683,7 +683,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
                 x[:, image_ids_restore.shape[0] + 1 :, :]
             )
 
-        if return_intermediates:
+        if self.return_intermediates:
             return (
                 image_output,
                 text_output,

@@ -58,11 +58,12 @@ imagenet_std = (0.229, 0.224, 0.225)
 FLAGS_DEF = define_flags_with_default(
     bridgedata_path="gs://rail-tpus-homer-v4/data_new",
     save_dir="gs://rail-tpus-andre-v4/log/m3ae",
-    load_checkpoint="/nfs/nfs2/users/andrehe/m3ae_public/m3ae_large.pkl",
+    load_checkpoint="/nfs/nfs2/users/andrehe/m3ae_public/m3ae_base.pkl",
     seed=42,
     total_steps=200000,
     batch_size=2,
     num_log_examples=5,
+    s0_only=False,
     accumulate_grad_steps=1,
     patch_size=16,
     discretized_image=False,
@@ -87,6 +88,7 @@ FLAGS_DEF = define_flags_with_default(
         dict(
             image_mask_ratio=0.0,
             text_mask_ratio=0.0,
+            model_type="base",
         )
     ),
     data=ImageTextDataset.get_default_config(),
@@ -280,7 +282,7 @@ def main(argv):
         action_proprio_metadata=FLAGS.bridgedata_config.action_proprio_metadata,
         sample_weights=FLAGS.bridgedata_config.sample_weights,
         text_processor=text_processor,
-        # start_and_end_only=True,
+        start_and_end_only=FLAGS.s0_only,
         **FLAGS.config.dataset_kwargs,
     )
     val_data = BridgeDataset(
@@ -290,7 +292,7 @@ def main(argv):
         action_proprio_metadata=FLAGS.bridgedata_config.action_proprio_metadata,
         train=True,
         text_processor=text_processor,
-        # start_and_end_only=True,
+        start_and_end_only=FLAGS.s0_only,
         **FLAGS.config.dataset_kwargs,
     )
     train_data_iter = train_data.get_iterator()
