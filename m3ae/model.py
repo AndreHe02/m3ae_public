@@ -743,9 +743,10 @@ class MaskedMultimodalAutoencoder(nn.Module):
                     :,
                 ],
                 action_x,
+                cls_x,
             )
 
-        return image_output, text_output, action_x
+        return image_output, text_output, action_x, cls_x
 
     def __call__(self, image, text, text_padding_mask, deterministic=False):
         (
