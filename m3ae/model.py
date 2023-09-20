@@ -357,6 +357,8 @@ class MaskedMultimodalAutoencoder(nn.Module):
 
         config.use_type_embedding = True
 
+        config.action_dim = 0
+
         if updates is not None:
             config.update(ConfigDict(updates).copy_and_resolve_references())
 
@@ -518,6 +520,20 @@ class MaskedMultimodalAutoencoder(nn.Module):
             input_tensors.append(text_x)
             padding_masks.append(text_padding_mask)
 
+        # avoid introducing any new parameters. just use duplicated class token
+        # with positional embeddings
+        action_tokens = jnp.broadcast_to(
+            self.cls_token,
+            (batch_size, self.config.action_dim, self.config.embed_dim),
+        )
+        action_tokens = action_tokens + get_1d_sincos_pos_embed(
+            self.config.emb_dim, self.config.action_dim
+        )
+        input_tensors.append(action_tokens)
+        padding_masks.append(
+            jnp.zeros((batch_size, self.config.action_dim), dtype=jnp.float32)
+        )
+
         x = jnp.concatenate(input_tensors, axis=1)
         padding_mask = jnp.concatenate(padding_masks, axis=1)
         x = self.encoder(x, deterministic, padding_mask)
@@ -570,6 +586,18 @@ class MaskedMultimodalAutoencoder(nn.Module):
         else:
             text_mask = text_ids_restore = text_padding_mask = None
 
+        action_tokens = jnp.broadcast_to(
+            self.cls_token,
+            (batch_size, self.config.action_dim, self.config.embed_dim),
+        )
+        action_tokens = action_tokens + get_1d_sincos_pos_embed(
+            self.config.emb_dim, self.config.action_dim
+        )
+        input_tensors.append(action_tokens)
+        padding_masks.append(
+            jnp.zeros((batch_size, self.config.action_dim), dtype=jnp.float32)
+        )
+
         x = jnp.concatenate(input_tensors, axis=1)
         padding_mask = jnp.concatenate(padding_masks, axis=1)
 
@@ -578,13 +606,17 @@ class MaskedMultimodalAutoencoder(nn.Module):
         cls_x = x[:, :1, :]
         if image is None:
             image_x = None
-            text_x = x[:, 1:, :]
+            text_x = x[:, 1 : text_keep_length + 1, :]
         elif text is None:
-            image_x = x[:, 1:, :]
+            image_x = x[:, 1 : image_keep_length + 1, :]
             text_x = None
         else:
             image_x = x[:, 1 : image_keep_length + 1, :]
-            text_x = x[:, image_keep_length + 1 :, :]
+            text_x = x[
+                :, image_keep_length + 1 : image_keep_length + 1 + text_keep_length, :
+            ]
+
+        action_x = x[:, -self.action_dim :, :]
 
         return (
             cls_x,
@@ -594,6 +626,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
             text_mask,
             image_ids_restore,
             text_ids_restore,
+            action_x,
         )
 
     def forward_decoder(
@@ -605,6 +638,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
         text_ids_restore,
         text_padding_mask,
         deterministic=False,
+        action_x=None,
     ):
         batch_size = cls_x.shape[0]
         input_tensors = [self.decoder_input_projection(cls_x)]
@@ -664,6 +698,16 @@ class MaskedMultimodalAutoencoder(nn.Module):
             input_tensors.append(text_x)
             padding_masks.append(text_padding_mask)
 
+        if action_x is not None:
+            action_x = self.decoder_input_projection(action_x)
+            action_x = action_x + get_1d_sincos_pos_embed(
+                self.config.dec_emb_dim, self.config.action_dim
+            )
+            input_tensors.append(action_x)
+            padding_masks.append(
+                jnp.zeros((batch_size, self.config.action_dim), dtype=jnp.float32)
+            )
+
         x = jnp.concatenate(input_tensors, axis=1)
         padding_mask = jnp.concatenate(padding_masks, axis=1)
         x = self.decoder(x, deterministic, padding_mask)
@@ -683,15 +727,25 @@ class MaskedMultimodalAutoencoder(nn.Module):
                 x[:, image_ids_restore.shape[0] + 1 :, :]
             )
 
+        action_x = x[:, -self.action_dim :, :]
+
         if self.return_intermediates:
             return (
                 image_output,
                 text_output,
                 x[:, 1 : image_ids_restore.shape[0] + 1, :],
-                x[:, image_ids_restore.shape[0] + 1 :, :],
+                x[
+                    :,
+                    image_ids_restore.shape[0]
+                    + 1 : image_ids_restore.shape[0]
+                    + text_ids_restore.shape[0]
+                    + 1,
+                    :,
+                ],
+                action_x,
             )
 
-        return image_output, text_output
+        return image_output, text_output, action_x
 
     def __call__(self, image, text, text_padding_mask, deterministic=False):
         (
@@ -702,6 +756,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
             text_mask,
             image_ids_restore,
             text_ids_restore,
+            action_x,
         ) = self.forward_encoder(image, text, text_padding_mask, deterministic)
         outputs = self.forward_decoder(
             cls_x,
@@ -711,6 +766,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
             text_ids_restore,
             text_padding_mask,
             deterministic,
+            action_x,
         )
         return *outputs, image_mask, text_mask
 
