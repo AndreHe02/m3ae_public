@@ -175,6 +175,17 @@ def random_masking(x, rng, keep_len, padding_mask=None):
     return kept, mask, ids_restore, padding_mask_kept
 
 
+def random_temporal_causal_masking(x, rng, gamma, tokens_per_timestep):
+    batch, length, dim = x.shape
+    timesteps = length // tokens_per_timestep
+    noise = jax.random.uniform(rng, (timesteps,), dtype=jnp.float32)
+    mask = jnp.ones_like(x[:, :, 0])
+    for i in range(1, timesteps):
+        if noise[i] < gamma:
+            mask = mask.at[:, i * tokens_per_timestep :].set(0.0)
+    return mask
+
+
 class MLP(nn.Module):
     hidden_dim: int
     output_dim: int
@@ -372,6 +383,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
 
         config.num_action_tokens = 0
         config.tokens_per_image = 256
+        config.subgoal_mask_gamma = 0.0
 
         if updates is not None:
             config.update(ConfigDict(updates).copy_and_resolve_references())
@@ -684,6 +696,23 @@ class MaskedMultimodalAutoencoder(nn.Module):
             image_x = index_sequence(
                 jnp.concatenate([image_x, masked_image_x], axis=1), image_ids_restore
             )
+
+            if self.config.subgoal_mask_gamma > 0.0 and not deterministic:
+                image_mask = random_temporal_causal_masking(
+                    image_x,
+                    self.make_rng("noise"),
+                    self.config.subgoal_mask_gamma,
+                    self.config.tokens_per_image,
+                )
+                image_x = image_x * image_mask[..., None] + jnp.broadcast_to(
+                    self.image_mask_embedding,
+                    (
+                        batch_size,
+                        image_x.shape[1],
+                        self.config.dec_emb_dim,
+                    ),
+                ) * (1 - image_mask[..., None])
+
             image_x = (
                 image_x
                 + get_patch_time_pos_embed(
