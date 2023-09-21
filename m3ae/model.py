@@ -141,6 +141,19 @@ def get_2d_sincos_pos_embed(embed_dim, length):
     return jnp.expand_dims(pos_embed, 0)
 
 
+def get_patch_time_pos_embed(embed_dim, num_patches, num_timesteps):
+    # interleave two positional embeddings
+    # a 2d positional embedding for the position of a patch in the image (same across images)
+    # and a 1d positional embedding that changes across images (every tokens_per_image tokens)
+
+    patch_pos_emb = get_2d_sincos_pos_embed(embed_dim, num_patches)
+    if num_timesteps <= 1:
+        return patch_pos_emb
+    time_pos_emb = get_1d_sincos_pos_embed(embed_dim, num_timesteps)
+    pos_emb = patch_pos_emb[:, None, :, :] + time_pos_emb[:, :, None, :]
+    return jnp.reshape(pos_emb, (1, -1, embed_dim))
+
+
 def index_sequence(x, ids):
     return x[:, ids, ...]
 
@@ -358,6 +371,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
         config.use_type_embedding = True
 
         config.num_action_tokens = 0
+        config.tokens_per_image = 256
 
         if updates is not None:
             config.update(ConfigDict(updates).copy_and_resolve_references())
@@ -494,6 +508,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
     def forward_representation(
         self, image, text, text_padding_mask, deterministic=False
     ):
+        assert False, "forward_representation not implemented"
         batch_size = image.shape[0]
         cls_token = jnp.broadcast_to(
             self.cls_token, (batch_size, 1, self.config.emb_dim)
@@ -550,12 +565,21 @@ class MaskedMultimodalAutoencoder(nn.Module):
         input_tensors = [cls_token]
         padding_masks = [jnp.zeros((batch_size, 1), dtype=jnp.float32)]
         if image is not None:
+            assert image.shape[1] % self.config.tokens_per_image == 0, (
+                "image length must be divisible by tokens_per_image"
+                f"({image.shape[1]} % {self.config.tokens_per_image} != 0)"
+            )
             image_keep_length = int(
                 image.shape[1] * (1.0 - self.config.image_mask_ratio)
             )
+
             image_x = (
                 self.image_embedding(image)
-                + get_2d_sincos_pos_embed(self.config.emb_dim, image.shape[1])
+                + get_patch_time_pos_embed(
+                    self.config.emb_dim,
+                    self.config.tokens_per_image,
+                    image.shape[1] // self.config.tokens_per_image,
+                )
                 + self.get_type_embedding("encoder_image_type_embedding")
             )
             image_x, image_mask, image_ids_restore = random_masking(
@@ -616,7 +640,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
                 :, image_keep_length + 1 : image_keep_length + 1 + text_keep_length, :
             ]
 
-        action_x = x[:, image_keep_length+text_keep_length+1:, :]
+        action_x = x[:, image_keep_length + text_keep_length + 1 :, :]
 
         return (
             cls_x,
@@ -662,8 +686,10 @@ class MaskedMultimodalAutoencoder(nn.Module):
             )
             image_x = (
                 image_x
-                + get_2d_sincos_pos_embed(
-                    self.config.dec_emb_dim, image_ids_restore.shape[0]
+                + get_patch_time_pos_embed(
+                    self.config.dec_emb_dim,
+                    self.config.tokens_per_image,
+                    image_ids_restore.shape[0] // self.config.tokens_per_image,
                 )
                 + self.get_type_embedding("decoder_image_type_embedding")
             )
@@ -726,10 +752,17 @@ class MaskedMultimodalAutoencoder(nn.Module):
                 x[:, 1 : image_ids_restore.shape[0] + 1, :]
             )
             text_output = self.decoder_text_output(
-                x[:, image_ids_restore.shape[0] + 1 :image_ids_restore.shape[0]+text_ids_restore.shape[0]+1, :]
+                x[
+                    :,
+                    image_ids_restore.shape[0]
+                    + 1 : image_ids_restore.shape[0]
+                    + text_ids_restore.shape[0]
+                    + 1,
+                    :,
+                ]
             )
 
-        action_x = x[:, image_ids_restore.shape[0]+text_ids_restore.shape[0]+1:, :]
+        action_x = x[:, image_ids_restore.shape[0] + text_ids_restore.shape[0] + 1 :, :]
 
         if self.return_intermediates:
             return (
