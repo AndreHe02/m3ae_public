@@ -524,7 +524,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
         # with positional embeddings
         action_tokens = jnp.broadcast_to(
             self.cls_token,
-            (batch_size, self.config.num_action_tokens, self.config.embed_dim),
+            (batch_size, self.config.num_action_tokens, self.config.emb_dim),
         )
         action_tokens = action_tokens + get_1d_sincos_pos_embed(
             self.config.emb_dim, self.config.num_action_tokens
@@ -588,7 +588,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
 
         action_tokens = jnp.broadcast_to(
             self.cls_token,
-            (batch_size, self.config.num_action_tokens, self.config.embed_dim),
+            (batch_size, self.config.num_action_tokens, self.config.emb_dim),
         )
         action_tokens = action_tokens + get_1d_sincos_pos_embed(
             self.config.emb_dim, self.config.num_action_tokens
@@ -616,7 +616,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
                 :, image_keep_length + 1 : image_keep_length + 1 + text_keep_length, :
             ]
 
-        action_x = x[:, -self.num_action_tokens :, :]
+        action_x = x[:, image_keep_length+text_keep_length+1:, :]
 
         return (
             cls_x,
@@ -726,10 +726,10 @@ class MaskedMultimodalAutoencoder(nn.Module):
                 x[:, 1 : image_ids_restore.shape[0] + 1, :]
             )
             text_output = self.decoder_text_output(
-                x[:, image_ids_restore.shape[0] + 1 :, :]
+                x[:, image_ids_restore.shape[0] + 1 :image_ids_restore.shape[0]+text_ids_restore.shape[0]+1, :]
             )
 
-        action_x = x[:, -self.num_action_tokens :, :]
+        action_x = x[:, image_ids_restore.shape[0]+text_ids_restore.shape[0]+1:, :]
 
         if self.return_intermediates:
             return (

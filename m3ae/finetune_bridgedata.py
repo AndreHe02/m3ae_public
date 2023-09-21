@@ -58,10 +58,10 @@ imagenet_std = (0.229, 0.224, 0.225)
 FLAGS_DEF = define_flags_with_default(
     bridgedata_path="gs://rail-tpus-homer-v4/data_new",
     save_dir="gs://rail-tpus-andre-v4/log/m3ae",
-    load_checkpoint="/nfs/nfs2/users/andrehe/m3ae_public/m3ae_base.pkl",
+    load_checkpoint="/nfs/nfs2/users/andrehe/m3ae_public/m3ae_large.pkl",
     seed=42,
-    total_steps=200000,
-    batch_size=2,
+    total_steps=1000000,
+    batch_size=64,
     num_log_examples=5,
     s0_only=False,
     accumulate_grad_steps=1,
@@ -482,6 +482,8 @@ def main(argv):
                     tf.io.gfile.join(FLAGS.save_dir, logger.run.name),
                     state,
                     step=step,
+                    overwrite=False,
+                    keep=1e6,
                 )
 
 
