@@ -697,13 +697,21 @@ class MaskedMultimodalAutoencoder(nn.Module):
                 jnp.concatenate([image_x, masked_image_x], axis=1), image_ids_restore
             )
 
-            if self.config.subgoal_mask_gamma > 0.0 and not deterministic:
-                image_mask = random_temporal_causal_masking(
-                    image_x,
-                    self.make_rng("noise"),
-                    self.config.subgoal_mask_gamma,
-                    self.config.tokens_per_image,
-                )
+            if self.config.subgoal_mask_gamma > 0.0:
+                if not deterministic:
+                    image_mask = random_temporal_causal_masking(
+                        image_x,
+                        self.make_rng("noise"),
+                        self.config.subgoal_mask_gamma,
+                        self.config.tokens_per_image,
+                    )
+                else:
+                    image_mask = random_temporal_causal_masking(
+                        image_x,
+                        self.make_rng("noise"),
+                        1.0,
+                        self.config.tokens_per_image,
+                    )
                 image_x = image_x * image_mask[..., None] + jnp.broadcast_to(
                     self.image_mask_embedding,
                     (
